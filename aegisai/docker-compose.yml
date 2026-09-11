@@ -1,0 +1,191 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: aegisai-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aegisai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aegisai}
+      POSTGRES_DB: ${POSTGRES_DB:-aegisai}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aegisai} -d ${POSTGRES_DB:-aegisai}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aegisai-network
+    restart: unless-stopped
+
+  # Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:v1.9.1
+    container_name: aegisai-qdrant
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: 6333
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    healthcheck:
+     test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/6333'"]
+     interval: 10s
+     timeout: 5s
+     retries: 5
+     start_period: 10s
+    networks:
+      - aegisai-network
+    restart: unless-stopped
+
+  # Ollama LLM Server
+  ollama:
+    image: ollama/ollama:latest
+    container_name: aegisai-ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+      OLLAMA_ORIGINS: "*"
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - aegisai-network
+    restart: unless-stopped
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aegisai-backend
+    environment:
+      - APP_NAME=${APP_NAME:-AegisAI}
+      - APP_VERSION=${APP_VERSION:-1.0.0}
+      - DEBUG=false
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-aegisai}:${POSTGRES_PASSWORD:-aegisai}@postgres:5432/${POSTGRES_DB:-aegisai}
+      - DATABASE_POOL_SIZE=10
+      - DATABASE_MAX_OVERFLOW=20
+      - SECRET_KEY=${SECRET_KEY}
+      - ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - REFRESH_TOKEN_EXPIRE_DAYS=7
+      - CORS_ORIGINS=["http://localhost:80","http://localhost:5173","http://localhost:3000"]
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - QDRANT_COLLECTION_NAME=aegisai_documents
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      - OLLAMA_EMBEDDING_MODEL=${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      - EMBEDDING_DIMENSION=768
+      - CHUNK_SIZE=512
+      - CHUNK_OVERLAP=50
+      - TOP_K_RESULTS=5
+      - HYBRID_RAG_ENABLED=${HYBRID_RAG_ENABLED:-false}
+      - BM25_K1=${BM25_K1:-1.5}
+      - BM25_B=${BM25_B:-0.75}
+      - VECTOR_TOP_K=${VECTOR_TOP_K:-20}
+      - BM25_TOP_K=${BM25_TOP_K:-20}
+      - FUSION_TOP_K=${FUSION_TOP_K:-12}
+      - RRF_K=${RRF_K:-60}
+      - RERANK_TOP_K=${RERANK_TOP_K:-5}
+      - RERANK_MODEL=${RERANK_MODEL:-cross-encoder/ms-marco-MiniLM-L-6-v2}
+      - MAX_CONTEXT_CHARS=${MAX_CONTEXT_CHARS:-12000}
+      - CITATION_VALIDATION_ENABLED=${CITATION_VALIDATION_ENABLED:-true}
+      - PHASE2_ENABLED=${PHASE2_ENABLED:-false}
+      - PHASE2_MULTI_QUERY_ENABLED=${PHASE2_MULTI_QUERY_ENABLED:-false}
+      - PHASE2_QUERY_REWRITE_ENABLED=${PHASE2_QUERY_REWRITE_ENABLED:-false}
+      - PHASE2_QUERY_EXPANSION_ENABLED=${PHASE2_QUERY_EXPANSION_ENABLED:-false}
+      - PHASE2_DECOMPOSITION_ENABLED=${PHASE2_DECOMPOSITION_ENABLED:-false}
+      - PHASE2_DIVERSITY_ENABLED=${PHASE2_DIVERSITY_ENABLED:-false}
+      - PHASE2_DIVERSITY_MAX_PER_DOC=${PHASE2_DIVERSITY_MAX_PER_DOC:-3}
+      - PHASE2_ADJACENT_EXPANSION_ENABLED=${PHASE2_ADJACENT_EXPANSION_ENABLED:-false}
+      - PHASE2_ADJACENT_THRESHOLD=${PHASE2_ADJACENT_THRESHOLD:-0.7}
+      - PHASE2_VERSION_HANDLING_ENABLED=${PHASE2_VERSION_HANDLING_ENABLED:-false}
+      - PHASE2_CONFLICT_DETECTION_ENABLED=${PHASE2_CONFLICT_DETECTION_ENABLED:-true}
+      - PHASE2_COVERAGE_ENABLED=${PHASE2_COVERAGE_ENABLED:-true}
+      - PHASE2_PROMPT_DEFENSE_ENABLED=${PHASE2_PROMPT_DEFENSE_ENABLED:-true}
+      - PHASE2_TABLE_HANDLING_ENABLED=${PHASE2_TABLE_HANDLING_ENABLED:-true}
+      - LOG_SENSITIVE_DATA=${LOG_SENSITIVE_DATA:-false}
+      - MAX_FILE_SIZE=52428800
+      - ALLOWED_EXTENSIONS=[".pdf",".docx",".txt",".md"]
+      - UPLOAD_DIR=/app/uploads
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json
+    volumes:
+      - ./backend:/app
+      - uploads_data:/app/uploads
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/health/ready || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - aegisai-network
+    restart: unless-stopped
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aegisai-frontend
+    environment:
+      - VITE_API_URL=/api
+    expose:
+      - "80"
+    networks:
+      - aegisai-network
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy
+  # Nginx serves as the single entry point for both frontend and API.
+  nginx:
+    image: nginx:alpine
+    container_name: aegisai-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Uncomment SSL volumes when certificates are available:
+      # - ./docker/nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - aegisai-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  ollama_data:
+  uploads_data:
+
+networks:
+  aegisai-network:
+    driver: bridge

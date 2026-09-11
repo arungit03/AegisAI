@@ -1,0 +1,4 @@
+AegisAI test document.
+The vector database used by AegisAI is Qdrant.
+The language model used by AegisAI is Qwen2.5 7B.
+The embedding model is nomic-embed-text.

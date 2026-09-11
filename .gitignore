@@ -1,0 +1,47 @@
+# Environment
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# Frontend
+node_modules/
+dist/
+.vite/
+
+# Docker
+*.log
+.docker/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Uploads
+uploads/
+*.tmp
+
+# SSL
+ssl/
+*.pem
+*.key
