@@ -719,14 +719,19 @@ class HybridRagPipeline:
 
         # Claim validation (Phase 2)
         claim_report = None
+        claim_filtered_answer = None
         if phase2:
             try:
-                from app.rag.claim_validation import extract_claims, validate_claims
+                from app.rag.claim_validation import extract_claims, validate_claims, filter_unsupported_claims
                 claims = extract_claims(answer)
                 if claims:
                     claim_report = validate_claims(claims, [h for h in final_hits if h in included_raw] or final_hits)
+                    # P19: remove / qualify claims the retrieved evidence does not support.
+                    filtered = filter_unsupported_claims(answer, claim_report)
+                    if filtered and filtered.strip():
+                        claim_filtered_answer = filtered
             except Exception:
-                pass
+                claim_report = None
 
         processing_ms = int((time.time() - start_time) * 1000)
 
@@ -804,12 +809,20 @@ class HybridRagPipeline:
                     "issues": [i.detail for i in strict_citation_report.issues[:5]],
                 }
             if claim_report:
-                retrieval_debug["claim_validation"] = {
-                    "total_claims": claim_report.total_claims,
-                    "grounded": claim_report.grounded_count,
-                    "ratio": claim_report.grounded_ratio,
-                    "ungrounded": claim_report.ungrounded_claims[:3],
-                }
+                # validate_claims returns List[ClaimValidation]; derive report stats
+                # defensively so debug never crashes the pipeline.
+                try:
+                    _tc = len(claim_report)
+                    _g = sum(1 for c in claim_report if c.supported and c.action == "keep")
+                    retrieval_debug["claim_validation"] = {
+                        "total_claims": _tc,
+                        "grounded": _g,
+                        "ratio": round(_g / _tc, 3) if _tc else 1.0,
+                        "ungrounded": [getattr(c, "claim", "") for c in claim_report if not c.supported][:3],
+                        "filtered": bool(claim_filtered_answer and claim_filtered_answer != answer),
+                    }
+                except Exception:
+                    pass
             if injection_result and injection_result.has_injection:
                 retrieval_debug["injection"] = {
                     "has_injection": True,
@@ -826,8 +839,11 @@ class HybridRagPipeline:
             if tracker:
                 retrieval_debug["performance"] = tracker.to_dict()
 
+        # P19: prefer the claim-filtered answer (unsupported claims removed/qualified).
+        final_answer = claim_filtered_answer if claim_filtered_answer else answer
+
         result = RAGResult(
-            answer=answer,
+            answer=final_answer,
             sources=search_hits,
             model_used=model_used,
             processing_time_ms=processing_ms,
